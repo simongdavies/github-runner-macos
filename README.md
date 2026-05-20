@@ -23,63 +23,76 @@ This directory contains scripts to automatically start and restart GitHub Action
 2. `./run.sh` exists and is executable in each runner directory.
 3. macOS (tested on Big Sur+; should work on any recent version).
 
-## Installation
+### Step 1: Install the Launchd Services
 
-### Step 1: Set Up Post-Job Cleanup (Optional but Recommended)
-
-GitHub Actions provides an official hook mechanism to run scripts after each job. To enable post-job cleanup:
-
-For each runner directory, edit `$HOME/github-runner-N/.env` and add:
-
-```bash
-ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/absolute/path/to/github-runner-cleanup.sh /absolute/path/to/github-runner-N
-```
-
-**Example** (replace `YOUR_USER` with your actual user):
-
-```bash
-# For runner-1
-ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/Users/YOUR_USER/scripts/github-runner-cleanup.sh /Users/YOUR_USER/github-runner-1
-
-# For runner-2
-ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/Users/YOUR_USER/scripts/github-runner-cleanup.sh /Users/YOUR_USER/github-runner-2
-```
-
-**Important**: Use **absolute paths**, not `~`. The `.env` file is read when the runner starts, and relative paths won't expand correctly.
-
-After editing `.env`, restart the runner for the hook to take effect:
-
-```bash
-# Stop and restart runner-1
-launchctl unload ~/Library/LaunchAgents/com.github.runner-1.plist
-launchctl load ~/Library/LaunchAgents/com.github.runner-1.plist
-```
-
-### Step 2: Install the Launchd Services
+The setup script automatically handles post-job cleanup configuration—no manual steps needed.
 
 ### Option A: Install Both Runners
 
 ```bash
-bash scripts/setup-runner-macos.sh --runner-1 --runner-2
+bash setup-runner-macos.sh --runner-1 --runner-2
 ```
 
 ### Option B: Install Runner-1 Only
 
 ```bash
-bash scripts/setup-runner-macos.sh --runner-1
+bash setup-runner-macos.sh --runner-1
 ```
 
 ### Option C: Install Runner-2 Only
 
 ```bash
-bash scripts/setup-runner-macos.sh --runner-2
+bash setup-runner-macos.sh --runner-2
 ```
 
 The setup script will:
 1. Make `github-runner-wrapper.sh` executable
-2. Substitute your actual `$HOME` path into the plist templates
-3. Copy plist files to `~/Library/LaunchAgents/`
-4. Load them via `launchctl`
+2. Create a self-contained hook script in each runner directory (`job-completed-hook.sh`)
+3. Configure the `.env` file to use the hook
+4. Substitute your actual `$HOME` path into the plist templates
+5. Copy plist files to `~/Library/LaunchAgents/`
+6. Load them via `launchctl`
+
+### What Happens After Each Job
+
+After each job completes, the GitHub Actions runner automatically invokes the hook at `$HOME/github-runner-N/job-completed-hook.sh`. This hook:
+- Determines its runner directory from its own location
+- Cleans up the `_work/*` directory to remove job artifacts
+- Logs cleanup activities to `.cleanup.log` in the runner directory
+
+This happens without any arguments being passed to the hook (which is a GitHub Actions requirement).
+
+## Monitoring and Logs
+
+Monitor runner status:
+```bash
+launchctl list com.github.runner-1
+launchctl list com.github.runner-2
+```
+
+View runner logs:
+```bash
+tail -f ~/.github-runner-logs/runner-1.log
+tail -f ~/.github-runner-logs/runner-2.log
+```
+
+View cleanup logs:
+```bash
+tail -f ~/github-runner-1/.cleanup.log
+tail -f ~/github-runner-2/.cleanup.log
+```
+
+## Uninstall
+
+To uninstall all runners:
+```bash
+bash setup-runner-macos.sh --cleanup
+```
+
+This will:
+1. Unload the services via `launchctl`
+2. Remove the plist files from `~/Library/LaunchAgents/`
+3. Leave your runner directories intact (in case you want to use them manually)
 
 ## Cleanup of `_work` Directory
 

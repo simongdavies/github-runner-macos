@@ -28,6 +28,67 @@ CLEANUP=false
 INSTALL_R1=false
 INSTALL_R2=false
 
+set_or_replace_env_var() {
+    local env_file="$1"
+    local key="$2"
+    local value="$3"
+
+    if grep -q "^${key}=" "$env_file" 2>/dev/null; then
+        sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_file"
+    else
+        echo "${key}=${value}" >> "$env_file"
+    fi
+}
+
+configure_job_completed_hook() {
+    local runner_num="$1"
+    local runner_dir="$HOME/github-runner-${runner_num}"
+    local env_file="$runner_dir/.env"
+    local hook_wrapper="$runner_dir/job-completed-hook.sh"
+
+    if [ ! -d "$runner_dir" ]; then
+        return 0
+    fi
+
+    # Create a self-contained hook that doesn't require arguments.
+    # GitHub Actions runner hooks cannot receive arguments, so we embed
+    # the cleanup logic directly in the hook script.
+    cat > "$hook_wrapper" <<'EOF'
+#!/bin/bash
+set -u
+
+# Hook runs in the runner directory context.
+# Determine runner directory from this script's location.
+RUNNER_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG_FILE="${RUNNER_DIR}/.cleanup.log"
+
+{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Post-job cleanup started"
+    
+    if [ ! -d "$RUNNER_DIR/_work" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] _work directory not found"
+        exit 0
+    fi
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cleaning _work/*..."
+    rm -rf "$RUNNER_DIR/_work"/* 2>&1 || {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: Cleanup failed (non-fatal)"
+        exit 0
+    }
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cleanup complete"
+} >> "$LOG_FILE" 2>&1
+
+exit 0
+EOF
+
+    chmod +x "$hook_wrapper"
+    touch "$env_file"
+    set_or_replace_env_var "$env_file" "ACTIONS_RUNNER_HOOK_JOB_COMPLETED" "$hook_wrapper"
+
+    echo "  ✓ Configured post-job hook in $env_file"
+}
+
 # Parse arguments
 for arg in "$@"; do
     case "$arg" in
@@ -88,6 +149,10 @@ install_runner() {
             return 1
         fi
     fi
+
+    # Configure post-job cleanup hook using a runner-local wrapper.
+    # GitHub runner expects ACTIONS_RUNNER_HOOK_JOB_COMPLETED to be one file path only.
+    configure_job_completed_hook "$runner_num"
 
     # Create LaunchAgents directory if needed
     mkdir -p "$LAUNCH_AGENTS_DIR"
