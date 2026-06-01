@@ -24,7 +24,7 @@
 #   tart-bake-ubuntu.sh [--golden-image <name>] [--base-image <ref>]
 #                       [--runner-version <x.y.z>] [--force]
 
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tart-common.sh
@@ -32,9 +32,43 @@ source "$SCRIPT_DIR/tart-common.sh"
 
 RUNNER_VERSION=""
 FORCE=false
+BAKE_STAGE="initializing"
 
 usage() {
     grep '^#' "$0" | sed 's/^# \{0,1\}//'
+}
+
+set_bake_stage() {
+    BAKE_STAGE="$1"
+}
+
+report_failure() {
+    local exit_code="$1"
+
+    err "Bake failed during: ${BAKE_STAGE}"
+
+    case "$BAKE_STAGE" in
+        "waiting for guest IP")
+            err "The VM booted but Tart did not report an IP address before the timeout (${TART_BOOT_TIMEOUT}s)."
+            ;;
+        "waiting for SSH port")
+            err "The guest obtained an IP address but port 22 never opened before the timeout (${TART_BOOT_TIMEOUT}s)."
+            ;;
+        "injecting SSH key")
+            err "The guest never accepted the default password-based SSH login. Verify the base image still uses ${TART_GUEST_USER}/${TART_GUEST_PASSWORD} and that sshd finished starting."
+            ;;
+        "waiting for key-based SSH")
+            err "The public key injection completed, but the guest never accepted key-based SSH before the timeout (${TART_BOOT_TIMEOUT}s)."
+            ;;
+        "provisioning guest")
+            err "Guest provisioning failed after SSH came up. Review the package installation or KVM verification output above for the first failing command."
+            ;;
+        "hardening SSH")
+            err "The image was provisioned, but disabling password SSH failed. The VM is still being shut down for safety."
+            ;;
+    esac
+
+    exit "$exit_code"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -86,10 +120,23 @@ resolve_runner_version() {
 # 3. Clone the base image into the golden image name.
 # -----------------------------------------------------------------------------
 clone_base_image() {
-    if tart list 2>/dev/null | grep -qE "[[:space:]]${TART_GOLDEN_IMAGE}[[:space:]]"; then
+    local exists=false
+
+    if tart list --format json 2>/dev/null | grep -q '"Name"[[:space:]]*:[[:space:]]*"'"${TART_GOLDEN_IMAGE}"'"'; then
+        exists=true
+    fi
+
+    if [ "$exists" = true ]; then
         if [ "$FORCE" = true ]; then
+            log "Stopping existing golden image: $TART_GOLDEN_IMAGE"
+            tart stop "$TART_GOLDEN_IMAGE" 2>/dev/null || true
+
             log "Removing existing golden image: $TART_GOLDEN_IMAGE"
-            tart delete "$TART_GOLDEN_IMAGE"
+            tart delete "$TART_GOLDEN_IMAGE" 2>/dev/null || true
+
+            if tart list --format json 2>/dev/null | grep -q '"Name"[[:space:]]*:[[:space:]]*"'"${TART_GOLDEN_IMAGE}"'"'; then
+                die "Failed to remove existing golden image '$TART_GOLDEN_IMAGE'."
+            fi
         else
             die "Golden image '$TART_GOLDEN_IMAGE' already exists. Use --force to rebuild."
         fi
@@ -113,12 +160,21 @@ clone_base_image() {
 inject_ssh_key() {
     local ip="$1"
     local pubkey
+    local deadline
     pubkey="$(cat "${TART_SSH_KEY}.pub")"
+    deadline=$(( $(date +%s) + TART_BOOT_TIMEOUT ))
 
-    log "Injecting SSH public key via password login"
-    SSHPASS="$TART_GUEST_PASSWORD" sshpass -e ssh "${TART_SSH_OPTS[@]}" \
-        "${TART_GUEST_USER}@${ip}" \
-        "install -d -m 700 ~/.ssh && printf '%s\n' '$pubkey' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+    log "Waiting for password-based SSH so the public key can be injected"
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if SSHPASS="$TART_GUEST_PASSWORD" sshpass -e ssh "${TART_SSH_OPTS[@]}" \
+            "${TART_GUEST_USER}@${ip}" \
+            "install -d -m 700 ~/.ssh && touch ~/.ssh/authorized_keys && grep -qxF '$pubkey' ~/.ssh/authorized_keys || printf '%s\n' '$pubkey' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"; then
+            return 0
+        fi
+        sleep 2
+    done
+
+    return 1
 }
 
 # Run the in-guest provisioning over key-based SSH. The heredoc body executes
@@ -182,10 +238,16 @@ harden_ssh() {
 }
 
 main() {
+    set_bake_stage "ensuring SSH key"
     ensure_ssh_key
+
+    set_bake_stage "resolving runner version"
     resolve_runner_version
+
+    set_bake_stage "cloning base image"
     clone_base_image
 
+    set_bake_stage "booting guest"
     log "Booting golden image with nested virtualization for provisioning"
     # Run headless in the background; we drive it entirely over SSH.
     tart run --nested --no-graphics "$TART_GOLDEN_IMAGE" &
@@ -194,20 +256,36 @@ main() {
     # Ensure we always power the guest down, even on error.
     local ip=""
     cleanup() {
-        [ -n "$ip" ] && stop_guest "$TART_GOLDEN_IMAGE" "$ip"
-        wait "$tart_pid" 2>/dev/null || true
+        if [ -n "${ip:-}" ]; then
+            log "Cleaning up guest after stage: ${BAKE_STAGE}"
+            stop_guest "$TART_GOLDEN_IMAGE" "$ip"
+        fi
+        wait "${tart_pid:-}" 2>/dev/null || true
     }
     trap cleanup EXIT
+    trap 'report_failure "$?"' ERR
 
+    set_bake_stage "waiting for guest IP"
     ip="$(tart_guest_ip "$TART_GOLDEN_IMAGE")"
     [ -n "$ip" ] || die "Guest did not obtain an IP address."
     log "Guest IP: $ip"
 
-    inject_ssh_key "$ip"
+    set_bake_stage "waiting for SSH port"
+    wait_for_tcp_port "$ip" 22 || die "Guest SSH port never opened."
+
+    set_bake_stage "injecting SSH key"
+    inject_ssh_key "$ip" || die "Guest did not accept password-based SSH."
+
+    set_bake_stage "waiting for key-based SSH"
     wait_for_ssh "$ip" || die "Guest did not accept key-based SSH."
+
+    set_bake_stage "provisioning guest"
     provision_guest "$ip"
+
+    set_bake_stage "hardening SSH"
     harden_ssh "$ip"
 
+    set_bake_stage "completed"
     log "Golden image '$TART_GOLDEN_IMAGE' baked successfully."
     log "Runner version: $RUNNER_VERSION"
 }

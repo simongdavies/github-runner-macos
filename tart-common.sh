@@ -49,7 +49,7 @@ TART_GUEST_RUNNER_DIR="${TART_GUEST_RUNNER_DIR:-/opt/actions-runner}"
 
 # Default runner labels. self-hosted is added automatically by GitHub and
 # cannot be suppressed. Deliberately no "tart" or "ephemeral" labels.
-TART_RUNNER_LABELS="${TART_RUNNER_LABELS:-kvm,arm64,linux,ubuntu-24.04}"
+TART_RUNNER_LABELS="${TART_RUNNER_LABELS:-arm64,kvm,linux,ubuntu-24.04}"
 
 # How long (seconds) to wait for a guest to obtain an IP / accept SSH.
 TART_BOOT_TIMEOUT="${TART_BOOT_TIMEOUT:-180}"
@@ -96,6 +96,22 @@ require_cmd() {
 tart_guest_ip() {
     local vm="$1"
     tart ip "$vm" --wait "$TART_BOOT_TIMEOUT"
+}
+
+# Block until a TCP port starts accepting connections or the timeout elapses.
+wait_for_tcp_port() {
+    local host="$1"
+    local port="$2"
+    local deadline=$(( $(date +%s) + TART_BOOT_TIMEOUT ))
+
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if ( : >"/dev/tcp/${host}/${port}" ) >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+    done
+
+    return 1
 }
 
 # Block until the guest accepts a key-based SSH login or the timeout elapses.

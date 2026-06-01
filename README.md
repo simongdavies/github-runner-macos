@@ -300,14 +300,17 @@ bash bootstrap-tart-runners.sh \
   --install-launchd
 ```
 
-Default labels are `kvm,arm64,linux,ubuntu-24.04` (GitHub adds `self-hosted`
-automatically). Target a job at this type of runner with:
+Default labels are `arm64,kvm,linux,ubuntu-24.04` (GitHub adds `self-hosted`
+automatically). These runners are intentionally tagged for ARM64/KVM jobs only;
+make the workflow request those labels explicitly, not generic Linux-only labels:
 
 ```yaml
 jobs:
   build:
-    runs-on: [self-hosted, kvm, ubuntu-24.04]
+    runs-on: [self-hosted, arm64, kvm, linux, ubuntu-24.04]
 ```
+
+If you omit `arm64` or `kvm`, GitHub may route the job to a different runner.
 
 Common flags:
 - `--count <N>`: number of concurrent ephemeral runners.

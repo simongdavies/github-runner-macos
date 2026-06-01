@@ -21,7 +21,7 @@
 #   bash bootstrap-tart-runners.sh \
 #     --count 4 --org my-org \
 #     --app-id 123456 --private-key ./app.pem \
-#     --labels "kvm,arm64,linux,ubuntu-24.04" --install-launchd
+#     --labels "arm64,kvm,linux,ubuntu-24.04" --install-launchd
 
 set -euo pipefail
 
@@ -47,7 +47,7 @@ Optional:
   --golden-image <name>    Golden image name. Default: gha-ubuntu-kvm.
   --base-image <ref>       Base OCI image. Default: ghcr.io/cirruslabs/ubuntu:latest.
   --runner-version <x.y.z> Actions runner version baked in. Default: latest.
-  --labels <csv>           Runner labels. Default: kvm,arm64,linux,ubuntu-24.04.
+  --labels <csv>           Runner labels. Default: arm64,kvm,linux,ubuntu-24.04.
   --name-prefix <prefix>   Runner name prefix. Default: tart-ubuntu.
   --rebuild-image          Force a rebuild of the golden image even if it exists.
   --install-launchd        Install/reload a launchd service per runner.
