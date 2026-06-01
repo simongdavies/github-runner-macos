@@ -31,7 +31,10 @@ Usage:
 Required:
   --dir-prefix <path-prefix>   Directory prefix. Script creates <prefix>-1 .. <prefix>-N.
   --count <N>                  Number of runners to create.
-  --token <token>              GitHub runner registration token.
+  Registration token, one of:
+    --token <token>            GitHub runner registration token.
+    --token-file <path>        Read the token from a file (keeps it out of shell
+                               history and argv; recommended).
   One of:
     --repo <owner/repo>        Repository runner target.
     --org <org>                Organization runner target.
@@ -44,9 +47,9 @@ Optional:
   Existing configured runners are skipped unless --replace or --force-recreate is used.
   --replace                    Pass --replace to config.sh (recommended).
   --force-recreate             Delete existing runner directories before install.
-    --install-launchd            Install/reload launchd services for all 1..N runners.
-    --launchd-label-prefix <p>   launchd label prefix. Default: com.github.runner.
-    --launch-agents-dir <dir>    LaunchAgents directory. Default: ~/Library/LaunchAgents.
+  --install-launchd            Install/reload launchd services for all 1..N runners.
+  --launchd-label-prefix <p>   launchd label prefix. Default: com.github.runner.
+  --launch-agents-dir <dir>    LaunchAgents directory. Default: ~/Library/LaunchAgents.
   --version <x.y.z>            Runner version. Default: latest release.
   -h, --help                   Show this help.
 EOF
@@ -58,44 +61,23 @@ set_or_replace_env_var() {
     local value="$3"
 
     if grep -q "^${key}=" "$env_file" 2>/dev/null; then
+        # NOTE: BSD/macOS sed requires the empty '' argument after -i. This
+        # script targets macOS only; GNU sed would drop the ''.
         sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_file"
     else
         echo "${key}=${value}" >> "$env_file"
     fi
 }
 
+# Install the canonical post-job cleanup hook into a runner directory and wire
+# it up via ACTIONS_RUNNER_HOOK_JOB_COMPLETED. We copy the single source-of-truth
+# script (github-runner-cleanup.sh) rather than duplicating its body here.
 configure_job_completed_hook() {
     local runner_dir="$1"
     local env_file="$runner_dir/.env"
     local hook_wrapper="$runner_dir/job-completed-hook.sh"
 
-    cat > "$hook_wrapper" <<'EOF'
-#!/bin/bash
-set -u
-
-RUNNER_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_FILE="${RUNNER_DIR}/.cleanup.log"
-
-{
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Post-job cleanup started"
-
-    if [ ! -d "$RUNNER_DIR/_work" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] _work directory not found"
-        exit 0
-    fi
-
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cleaning _work/*..."
-    rm -rf "$RUNNER_DIR/_work"/* 2>&1 || {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: Cleanup failed (non-fatal)"
-        exit 0
-    }
-
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cleanup complete"
-} >> "$LOG_FILE" 2>&1
-
-exit 0
-EOF
-
+    cp "$SCRIPT_DIR/github-runner-cleanup.sh" "$hook_wrapper"
     chmod +x "$hook_wrapper"
     touch "$env_file"
     set_or_replace_env_var "$env_file" "ACTIONS_RUNNER_HOOK_JOB_COMPLETED" "$hook_wrapper"
@@ -168,6 +150,7 @@ EOF
 DIR_PREFIX=""
 COUNT=""
 TOKEN=""
+TOKEN_FILE=""
 TARGET_URL=""
 REPO=""
 ORG=""
@@ -193,6 +176,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --token)
             TOKEN="${2:-}"
+            shift 2
+            ;;
+        --token-file)
+            TOKEN_FILE="${2:-}"
             shift 2
             ;;
         --repo)
@@ -255,8 +242,21 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ -z "$DIR_PREFIX" ] || [ -z "$COUNT" ] || [ -z "$TOKEN" ]; then
-    echo "ERROR: --dir-prefix, --count, and --token are required."
+# Resolve the registration token from --token-file if provided. Reading it from
+# a file keeps the secret out of shell history and this script's argv.
+if [ -n "$TOKEN_FILE" ]; then
+    [ -f "$TOKEN_FILE" ] || { echo "ERROR: --token-file not found: $TOKEN_FILE"; exit 1; }
+    TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+fi
+
+if [ -z "$DIR_PREFIX" ] || [ -z "$COUNT" ]; then
+    echo "ERROR: --dir-prefix and --count are required."
+    usage
+    exit 1
+fi
+
+if [ -z "$TOKEN" ]; then
+    echo "ERROR: A registration token is required (use --token or --token-file)."
     usage
     exit 1
 fi
@@ -389,5 +389,5 @@ echo "Provisioning complete."
 if [ "$INSTALL_LAUNCHD" = true ]; then
     echo "launchd services installed/reloaded for runners 1..$COUNT"
 else
-    echo "Next step: add --install-launchd or run setup-runner-macos.sh for service install."
+    echo "Next step: re-run with --install-launchd to install the launchd services."
 fi

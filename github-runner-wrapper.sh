@@ -46,12 +46,17 @@ cleanup() {
 
 trap cleanup EXIT
 
-# Handle SIGTERM (macOS shutdown) — try to stop the runner gracefully
+# Track the current runner child so the SIGTERM handler can stop it cleanly.
+run_pid=""
+
+# Handle SIGTERM (macOS shutdown / launchctl unload): forward the signal to the
+# running runner so it can deregister and finish its current step, then exit.
 handle_sigterm() {
-    log "WARN" "Received SIGTERM, stopping gracefully..."
-    # If ./run.sh is running, it should handle SIGTERM itself
-    # We'll give it time to clean up, then exit
-    sleep 2
+    log "WARN" "Received SIGTERM, stopping runner gracefully..."
+    if [ -n "$run_pid" ] && kill -0 "$run_pid" 2>/dev/null; then
+        kill -TERM "$run_pid" 2>/dev/null || true
+        wait "$run_pid" 2>/dev/null || true
+    fi
     exit 0
 }
 
@@ -79,23 +84,28 @@ while true; do
     restart_count=$((restart_count + 1))
     log "INFO" "Starting runner (attempt #$restart_count)"
 
-    # Change to runner directory and execute run.sh
-    # Capture exit code but don't exit on failure — we want to restart
     cd "$RUNNER_DIR"
 
-    # Prevent system sleep while runner is active
-    caffeinate -dimsu ./run.sh 2>&1 | tee -a "$LOG_FILE" &
+    # Prevent system sleep while the runner is active. Use a process
+    # substitution for the tee so that $! is caffeinate's PID (and therefore
+    # reflects ./run.sh's real exit status). A plain pipe would make $! point at
+    # tee, masking the runner's exit code.
+    caffeinate -dimsu ./run.sh > >(tee -a "$LOG_FILE") 2>&1 &
     run_pid=$!
 
-    # Wait for the runner to exit
+    # Wait for the runner to exit. Guard with set +e so a non-zero exit (or a
+    # signal-interrupted wait) doesn't abort the wrapper — we want to restart.
     set +e
-    wait $run_pid
+    wait "$run_pid"
     run_exit_code=$?
     set -e
+    run_pid=""
 
     log "WARN" "Runner exited with code $run_exit_code"
 
-    # Wait before restarting (but be interruptible)
-    log "INFO" "Restarting runner in ${RESTART_DELAY}s (or killed via signal)..."
-    sleep $RESTART_DELAY
+    # Interruptible back-off: background the sleep and wait on it so a SIGTERM
+    # breaks us out immediately via the trap instead of blocking the delay.
+    log "INFO" "Restarting runner in ${RESTART_DELAY}s..."
+    sleep "$RESTART_DELAY" &
+    wait "$!" 2>/dev/null || true
 done
