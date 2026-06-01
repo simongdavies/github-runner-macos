@@ -11,6 +11,10 @@ name: Check KVM ARM64 Runner
 
 on:
   workflow_dispatch:
+  # Path-scoped so it only runs on PRs that touch this probe, not every PR.
+  pull_request:
+    paths:
+      - .github/workflows/check-kvm-arm64.yml
 
 permissions:
   contents: read
