@@ -61,7 +61,6 @@ TART_GUEST_RUNNER_DIR="${TART_GUEST_RUNNER_DIR:-/opt/actions-runner}"
 # independent writers hit the same directory over virtio-fs at once — you'd risk
 # corrupt cache entries. Per-runner dirs trade a little disk + cross-runner hit
 # rate for correctness. Set TART_CACHE_DIR to relocate the cache root.
-TART_CACHE_DIR="${TART_CACHE_DIR:-$HOME/.cache/github-runner-tart}"
 TART_CACHE_TAG="${TART_CACHE_TAG:-ci-cache}"
 TART_CACHE_GUEST_MOUNT="${TART_CACHE_GUEST_MOUNT:-/var/cache/ci}"
 TART_CACHE_MAX_SIZE="${TART_CACHE_MAX_SIZE:-20G}"
