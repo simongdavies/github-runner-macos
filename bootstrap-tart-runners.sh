@@ -227,6 +227,8 @@ ${user_block}
 
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-is</string>
         <string>/bin/bash</string>
         <string>${SCRIPT_DIR}/tart-runner-loop.sh</string>
         <string>--app-id</string>
