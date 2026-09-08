@@ -119,6 +119,8 @@ ${user_block}
 
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-is</string>
         <string>/bin/bash</string>
         <string>${SCRIPT_DIR}/github-runner-wrapper.sh</string>
         <string>${runner_dir}</string>

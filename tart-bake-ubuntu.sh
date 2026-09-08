@@ -257,6 +257,14 @@ harden_ssh() {
         "echo 'PasswordAuthentication no' | sudo tee /etc/ssh/sshd_config.d/10-no-password.conf >/dev/null && sudo systemctl restart ssh"
 }
 
+install_kernel() {
+    local ip="$1"
+    local kernel_version="7.0.0-28"
+    log "Installing patched linux-${kernel_version}"
+    ssh_guest "$ip" \
+      "sudo mkdir -p /tmp/virtiofs && sudo mount -t virtiofs '${TART_VIRTIOFS_AUTOMOUNT_TAG}' /tmp/virtiofs && sudo DEBIAN_FRONTEND=noninteractive apt-get -y remove linux-image-${kernel_version}-generic && sudo dpkg -i /tmp/virtiofs/debs/linux*${kernel_version}*vmid5*.deb"
+}
+
 main() {
     set_bake_stage "ensuring SSH key"
     ensure_ssh_key
@@ -270,7 +278,7 @@ main() {
     set_bake_stage "booting guest"
     log "Booting golden image with nested virtualization for provisioning"
     # Run headless in the background; we drive it entirely over SSH.
-    tart run --nested --no-graphics "$TART_GOLDEN_IMAGE" &
+    tart run --nested --no-graphics "$TART_GOLDEN_IMAGE" --dir="debs:${SCRIPT_DIR}/debs" &
     local tart_pid=$!
 
     # Ensure we always power the guest down, even on error.
@@ -304,6 +312,9 @@ main() {
 
     set_bake_stage "hardening SSH"
     harden_ssh "$ip"
+
+    set_bake_stage "installing patched kernel"
+    install_kernel "$ip"
 
     set_bake_stage "completed"
     log "Golden image '$TART_GOLDEN_IMAGE' baked successfully."
