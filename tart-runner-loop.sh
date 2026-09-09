@@ -25,7 +25,7 @@
 #   --golden-image                  Golden image name (default from common)
 #   --index                         Runner index (used in the runner name)
 #   --name-prefix                   Runner name prefix (default: tart-ubuntu)
-#   --labels                        Comma-separated labels (default from common)
+#   TART_RUNNER_LABELS / --labels    Comma-separated custom labels (default: kvm)
 
 set -Eeuo pipefail
 
