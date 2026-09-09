@@ -21,7 +21,7 @@
 #   bash bootstrap-tart-runners.sh \
 #     --count 4 --org my-org \
 #     --app-id 123456 --private-key ./app.pem \
-#     --labels "arm64,kvm,linux,ubuntu-24.04" --install-launchd
+#     --install-launchd
 
 set -euo pipefail
 
@@ -50,7 +50,8 @@ Optional:
     --cpus <n>               Guest vCPUs in the baked image. Default: 2.
     --memory-mb <mb>         Guest RAM in MB in the baked image. Default: 4096.
     --disk-gb <gb>           Guest disk size in GB in the baked image. Default: 50.
-  --labels <csv>           Runner labels. Default: arm64,kvm,linux,ubuntu-24.04.
+  --labels <csv>           Custom runner labels. Default: kvm.
+                          GitHub also adds self-hosted, Linux, and ARM64.
   --name-prefix <prefix>   Runner name prefix. Default: tart-ubuntu.
   --rebuild-image          Force a rebuild of the golden image even if it exists.
   --install-launchd        Install/reload a launchd service per runner.

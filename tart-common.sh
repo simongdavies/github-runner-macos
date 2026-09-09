@@ -70,9 +70,9 @@ TART_CACHE_MAX_SIZE="${TART_CACHE_MAX_SIZE:-20G}"
 # the actual cache lives at <mount>/<TART_CACHE_TAG>/.
 TART_VIRTIOFS_AUTOMOUNT_TAG="${TART_VIRTIOFS_AUTOMOUNT_TAG:-com.apple.virtio-fs.automount}"
 
-# Default runner labels. self-hosted is added automatically by GitHub and
-# cannot be suppressed. Deliberately no "tart" or "ephemeral" labels.
-TART_RUNNER_LABELS="${TART_RUNNER_LABELS:-arm64,kvm,linux,ubuntu-24.04}"
+# Custom runner labels; GitHub also adds self-hosted, Linux, and ARM64.
+# Do not reuse GitHub-hosted image labels: jobs match a subset of runner labels.
+TART_RUNNER_LABELS="${TART_RUNNER_LABELS:-kvm}"
 
 # How long (seconds) to wait for a guest to obtain an IP / accept SSH.
 TART_BOOT_TIMEOUT="${TART_BOOT_TIMEOUT:-180}"

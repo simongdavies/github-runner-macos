@@ -79,7 +79,6 @@ sudo bash bootstrap-gh-runners.sh \
   --count 3 \
   --org your-org \
   --token "YOUR_REGISTRATION_TOKEN" \
-  --labels "self-hosted,macos,arm64" \
   --replace \
   --install-launchd \
   --launchd-scope daemon \
@@ -94,7 +93,6 @@ bash bootstrap-gh-runners.sh \
   --count 3 \
   --repo owner/repo \
   --token "YOUR_REGISTRATION_TOKEN" \
-  --labels "self-hosted,macos,arm64" \
   --replace \
   --install-launchd \
   --launchd-scope agent
@@ -106,6 +104,7 @@ What this creates:
 - $HOME/github-runner-3
 
 Common flags:
+- --labels <csv>: Optional custom labels (e.g. `mini` or `hvf` where supported). GitHub automatically adds `self-hosted`, `macOS`, and `ARM64`; do not repeat them here.
 - --runner-group <name>: Org or enterprise runner group.
 - --name-prefix <prefix>: Base name for runners.
 - --token-file <path>: Read the registration token from a file instead of `--token` (keeps the secret out of shell history and the process list).
@@ -367,17 +366,27 @@ bash bootstrap-tart-runners.sh \
   --install-launchd
 ```
 
-Default labels are `arm64,kvm,linux,ubuntu-24.04` (GitHub adds `self-hosted`
-automatically). These runners are intentionally tagged for ARM64/KVM jobs only;
-make the workflow request those labels explicitly, not generic Linux-only labels:
+The only custom label by default is `kvm`. GitHub automatically adds
+`self-hosted`, `Linux`, and `ARM64`; neither bootstrap disables these default
+labels. Labels are case-insensitive. Request the OS, architecture, and capability
+explicitly in workflows:
 
 ```yaml
 jobs:
   build:
-    runs-on: [self-hosted, arm64, kvm, linux, ubuntu-24.04]
+    runs-on: [self-hosted, Linux, ARM64, kvm]
 ```
 
-If you omit `arm64` or `kvm`, GitHub may route the job to a different runner.
+GitHub matches **all labels requested by the job**, not the runner's full label
+set. Extra runner labels do not restrict which jobs it can accept: a job asking
+only for `self-hosted` or `Linux` can still match these runners. Omitting `ARM64`
+or `kvm` can also allow a job onto a runner without that architecture or
+capability. Labels are routing metadata, not an access-control boundary.
+
+Do not add GitHub-hosted image labels such as `ubuntu-24.04` to these runners.
+A bare `runs-on: ubuntu-24.04` can otherwise match an ARM64 Tart runner instead
+of the intended GitHub-hosted x64 environment. The guest remains Ubuntu 24.04;
+removing that label does not change its OS or installed tools.
 
 Common flags:
 - `--count <N>`: number of concurrent ephemeral runners.
@@ -387,7 +396,7 @@ Common flags:
 - `--cpus <n>`: set guest vCPU count in the baked image.
 - `--memory-mb <mb>`: set guest RAM in MB in the baked image.
 - `--disk-gb <gb>`: set guest disk size in GB in the baked image.
-- `--labels <csv>`: override runner labels.
+- `--labels <csv>`: replace the custom label list (default `kvm`), not GitHub's automatic labels. Keep `kvm` when adding other custom labels for KVM jobs. `TART_RUNNER_LABELS` sets the environment default; the CLI flag takes precedence.
 - `--name-prefix <prefix>`: runner name prefix (default `tart-ubuntu`).
 - `--rebuild-image`: force a rebuild of the golden image.
 - `--install-launchd`: install/reload a launchd service per runner.
