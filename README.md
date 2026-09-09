@@ -410,38 +410,6 @@ Hardening defaults (in `tart-common.sh`):
 - Automatic cleanup of stale host-side `tart run` processes.
 - Failure circuit breaker: if a runner sees repeated failures (default: 3 in 600s), it cools down for 180s, then resumes automatically.
 
-### Migrating existing runner labels
-
-**Migrate consuming workflows before removing `ubuntu-24.04` from live
-runners.** The selector `[self-hosted, Linux, ARM64, kvm]` matches both the old
-and new label sets, so workflows can migrate first without interrupting routing.
-
-1. Update every consuming ARM64/KVM selector to drop `ubuntu-24.04`, retaining
-   `self-hosted`, `Linux`, `ARM64`, and `kvm`. In `hyperlight-dev/hyperlight`,
-   this includes `.github/workflows/dep_build_guests.yml`,
-   `dep_run_examples.yml`, `dep_fuzzing.yml`, `PrimeCaches.yml`, and the ARM
-   branch in `dep_benchmarks.yml` (even if its current callers only use X64).
-   Guest builds are dependencies of ARM tests and snapshot regeneration;
-   removing the live label first can strand the whole chain.
-2. Account for queued jobs, open PRs using old workflow refs, reusable workflow
-   pins, and reruns of old commits. Drain or cancel superseded queued runs and
-   update the relevant refs before the cutover; rerunning an old workflow does
-   not pick up a selector fix on `main`. Use an updated ref for replacement runs.
-3. During a maintenance window after active jobs finish, update the scripts on
-   the Mac and regenerate the Tart launchd plists by rerunning bootstrap with
-   the original target, App credentials, count, names, image, and launchd
-   settings plus `--install-launchd`. Omit `--labels` to use the new default
-   (remove any stale `TART_RUNNER_LABELS` environment override), or pass the
-   intended custom list explicitly, such as `--labels "kvm"`. Preserve any
-   meaningful site-specific custom labels. Bootstrap reloads the services.
-   Existing plists embed an explicit `--labels` argument: pulling new scripts
-   or merely restarting an unchanged plist does **not** remove the old labels.
-   No golden-image rebuild is needed; labels are set at each registration.
-4. Confirm newly registered runners have `self-hosted`, `Linux`, `ARM64`, and
-   `kvm`, with no `ubuntu-24.04`, then run the **Check KVM ARM64 Runner** probe
-   from an updated workflow ref. Existing registrations keep their old labels
-   until they are replaced; verify none remain before ending the cutover.
-
 ### Persistent build cache (virtio-fs)
 
 Each ephemeral guest is destroyed after one job, so without help every job
