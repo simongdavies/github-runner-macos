@@ -19,7 +19,7 @@ set -Eeuo pipefail
 # Config
 RUNNER_DIR="${1:?Error: runner directory required (e.g., \$HOME/github-runner-1)}"
 RESTART_DELAY=5  # seconds to wait between restart attempts
-LOG_DIR="${HOME}/.github-runner-logs"
+LOG_DIR="${RUNNER_LOG_DIR:-${HOME}/.github-runner-logs}"
 LOG_FILE="${LOG_DIR}/runner-$(basename "$RUNNER_DIR").log"
 PID_FILE="${LOG_DIR}/runner-$(basename "$RUNNER_DIR").pid"
 FAILURE_STATE_FILE="${LOG_DIR}/runner-$(basename "$RUNNER_DIR").failure-epochs"
