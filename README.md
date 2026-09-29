@@ -104,7 +104,7 @@ What this creates:
 - $HOME/github-runner-3
 
 Common flags:
-- --labels <csv>: Optional custom labels (e.g. `mini` or `hvf` where supported). GitHub automatically adds `self-hosted`, `macOS`, and `ARM64`; do not repeat them here.
+- --labels <csv>: Custom labels (default: `hvf`). Passing this flag replaces the default. GitHub automatically adds `self-hosted`, `macOS`, and `ARM64`; do not repeat them here.
 - --runner-group <name>: Org or enterprise runner group.
 - --name-prefix <prefix>: Base name for runners.
 - --token-file <path>: Read the registration token from a file instead of `--token` (keeps the secret out of shell history and the process list).
