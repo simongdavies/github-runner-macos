@@ -41,8 +41,8 @@ Required:
     --url <url>                Explicit target URL (repo or org).
 
 Optional:
-  --labels <csv>               Custom labels for all runners (e.g. "mini").
-                              GitHub adds self-hosted, macOS, and ARM64 automatically.
+    --labels <csv>               Custom labels for all runners. Default: "hvf".
+                                                             GitHub adds self-hosted, macOS, and ARM64 automatically.
   --runner-group <name>        Runner group name (org/enterprise scopes only).
   --name-prefix <prefix>       Runner name prefix. Default: "$(hostname -s)-runner".
   Existing configured runners are skipped unless --replace or --force-recreate is used.
@@ -232,7 +232,7 @@ TOKEN_FILE=""
 TARGET_URL=""
 REPO=""
 ORG=""
-LABELS=""
+LABELS="hvf"
 RUNNER_GROUP=""
 NAME_PREFIX="$(hostname -s)-runner"
 REPLACE=false
