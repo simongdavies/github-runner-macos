@@ -48,6 +48,7 @@ These runners:
 - create numbered runner directories from a prefix
 - configure each runner against a repo or org
 - run them under launchd with restart behavior
+- give each runner a private `<runner-dir>/.home` directory, isolating user-level tool state such as Rustup, Cargo, and npm caches from concurrent runners
 - clean each runner work directory after every job (this clears `_work` only — it does **not** isolate jobs from the rest of the host)
 
 ## Scripts
@@ -102,6 +103,11 @@ What this creates:
 - $HOME/github-runner-1
 - $HOME/github-runner-2
 - $HOME/github-runner-3
+
+Each launchd service sets `HOME` to its runner's `.home` directory (for example,
+`$HOME/github-runner-1/.home`). This prevents concurrent runners from racing on
+shared user-level state such as `~/.rustup`. Host-level state including Homebrew,
+`/tmp`, keychains, and system services remains shared.
 
 Common flags:
 - --labels <csv>: Custom labels (default: `hvf`). Passing this flag replaces the default. GitHub automatically adds `self-hosted`, `macOS`, and `ARM64`; do not repeat them here.

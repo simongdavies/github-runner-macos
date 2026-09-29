@@ -97,6 +97,7 @@ install_launchd_service() {
     local label="${LAUNCHD_LABEL_PREFIX}-${runner_index}"
     local plist_dest="${LAUNCHD_DIR}/${label}.plist"
     local log_base="${RUNNER_HOME}/.github-runner-logs/runner-${runner_index}"
+    local isolated_home="${runner_dir}/.home"
     local user_block=""
 
     if [ "$LAUNCHD_SCOPE" = "daemon" ]; then
@@ -107,7 +108,10 @@ EOF
 )
     fi
 
-    mkdir -p "$LAUNCHD_DIR" "${RUNNER_HOME}/.github-runner-logs"
+    mkdir -p "$LAUNCHD_DIR" "${RUNNER_HOME}/.github-runner-logs" "$isolated_home"
+    if [ "$LAUNCHD_SCOPE" = "daemon" ]; then
+        chown "$LAUNCHD_USER" "$isolated_home"
+    fi
     chmod +x "$SCRIPT_DIR/github-runner-wrapper.sh"
 
     cat > "$plist_dest" <<EOF
@@ -152,7 +156,9 @@ ${user_block}
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
-        <string>${RUNNER_HOME}</string>
+        <string>${isolated_home}</string>
+        <key>RUNNER_LOG_DIR</key>
+        <string>${RUNNER_HOME}/.github-runner-logs</string>
         <key>GH_WRAPPER_FAILURE_WINDOW_SEC</key>
         <string>600</string>
         <key>GH_WRAPPER_FAILURE_THRESHOLD</key>
