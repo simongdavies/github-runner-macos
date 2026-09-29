@@ -108,8 +108,10 @@ Common flags:
 - --runner-group <name>: Org or enterprise runner group.
 - --name-prefix <prefix>: Base name for runners.
 - --token-file <path>: Read the registration token from a file instead of `--token` (keeps the secret out of shell history and the process list).
-- --force-recreate: Deletes existing directories before reinstall.
+- --replace: Reconfigure existing runners in place. The script stops any running launchd job first, deregisters the stale local config, then re-registers (passing `--replace` to `config.sh` so a same-named server-side runner is replaced).
+- --force-recreate: Stops the launchd job, deletes existing directories, and reinstalls from scratch. Implies `--replace` at registration time so the same-named server-side runner is replaced rather than rejected.
 - --install-launchd: Installs/reloads launchd services for all runners 1..N.
+- --uninstall-launchd: Stops and removes launchd services for runners 1..N, then exits. No token or target is required. Run with `sudo` to also remove system daemon plists in `/Library/LaunchDaemons`.
 - --launchd-scope <agent|daemon>: launchd domain (`agent` requires login, `daemon` starts at boot).
 - --launchd-user <user>: account used by daemon mode (`UserName` in plist).
 - --launchd-dir <dir>: launchd plist directory override.
@@ -187,11 +189,14 @@ for i in 1 2 3; do
   sudo launchctl bootout system/com.github.runner-${i} || true
 done
 
-# Uninstall daemon services
+# Uninstall daemon services (manual)
 for i in 1 2 3; do
   sudo launchctl bootout system/com.github.runner-${i} || true
   sudo rm -f /Library/LaunchDaemons/com.github.runner-${i}.plist
 done
+
+# Or let the script tear everything down (agent + daemon plists) for 1..N:
+sudo bash bootstrap-gh-runners.sh --dir-prefix "$HOME/github-runner" --count 3 --uninstall-launchd
 ```
 
 LaunchAgent mode:

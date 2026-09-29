@@ -49,6 +49,8 @@ Optional:
   --replace                    Pass --replace to config.sh (recommended).
   --force-recreate             Delete existing runner directories before install.
   --install-launchd            Install/reload launchd services for all 1..N runners.
+  --uninstall-launchd          Stop and remove launchd services for 1..N, then exit.
+                               Use sudo to also remove system daemon plists.
     --launchd-scope <scope>      launchd scope: agent|daemon. Default: agent.
     --launchd-user <user>        User account for daemon scope. Default: current user.
     --launchd-dir <dir>          Directory for plist files.
@@ -178,6 +180,51 @@ EOF
     echo "launchd service ready: $label"
 }
 
+# Stop a runner's launchd job in both agent and daemon scopes (best effort).
+# Leaves the plist in place; used before recreating/reconfiguring so the running
+# process releases the directory and server-side registration.
+stop_launchd_job() {
+    local runner_index="$1"
+    local label="${LAUNCHD_LABEL_PREFIX}-${runner_index}"
+    local uid agent_plist
+    uid="$(id -u)"
+    agent_plist="$HOME/Library/LaunchAgents/${label}.plist"
+
+    launchctl bootout "gui/${uid}/${label}" >/dev/null 2>&1 || true
+    [ -f "$agent_plist" ] && launchctl unload "$agent_plist" >/dev/null 2>&1 || true
+    launchctl bootout "system/${label}" >/dev/null 2>&1 || true
+}
+
+# Stop and delete a runner's launchd service (plist) in both scopes. Daemon
+# (system) plists require root; those are skipped with a warning otherwise.
+remove_launchd_service() {
+    local runner_index="$1"
+    local label="${LAUNCHD_LABEL_PREFIX}-${runner_index}"
+    local agent_plist="$HOME/Library/LaunchAgents/${label}.plist"
+    local daemon_plist="/Library/LaunchDaemons/${label}.plist"
+    local found=false
+
+    stop_launchd_job "$runner_index"
+
+    if [ -f "$agent_plist" ]; then
+        rm -f "$agent_plist"
+        found=true
+    fi
+
+    if [ -f "$daemon_plist" ]; then
+        if [ "$(id -u)" -eq 0 ]; then
+            rm -f "$daemon_plist"
+            found=true
+        else
+            echo "WARN: $daemon_plist needs root to remove; re-run with sudo."
+        fi
+    fi
+
+    if [ "$found" = true ]; then
+        echo "launchd service removed: $label"
+    fi
+}
+
 DIR_PREFIX=""
 COUNT=""
 TOKEN=""
@@ -192,6 +239,7 @@ REPLACE=false
 FORCE_RECREATE=false
 VERSION=""
 INSTALL_LAUNCHD=false
+UNINSTALL_LAUNCHD=false
 LAUNCHD_LABEL_PREFIX="com.github.runner"
 LAUNCHD_SCOPE="agent"
 LAUNCHD_USER="${SUDO_USER:-$USER}"
@@ -256,6 +304,10 @@ while [ "$#" -gt 0 ]; do
             INSTALL_LAUNCHD=true
             shift
             ;;
+        --uninstall-launchd)
+            UNINSTALL_LAUNCHD=true
+            shift
+            ;;
         --launchd-scope)
             LAUNCHD_SCOPE="${2:-}"
             shift 2
@@ -301,14 +353,25 @@ if [ -z "$DIR_PREFIX" ] || [ -z "$COUNT" ]; then
     exit 1
 fi
 
-if [ -z "$TOKEN" ]; then
-    echo "ERROR: A registration token is required (use --token or --token-file)."
-    usage
+if ! [[ "$COUNT" =~ ^[0-9]+$ ]] || [ "$COUNT" -lt 1 ]; then
+    echo "ERROR: --count must be a positive integer."
     exit 1
 fi
 
-if ! [[ "$COUNT" =~ ^[0-9]+$ ]] || [ "$COUNT" -lt 1 ]; then
-    echo "ERROR: --count must be a positive integer."
+# Dedicated teardown mode: stop and remove launchd services, then exit. No token
+# or target is needed since nothing is being registered.
+if [ "$UNINSTALL_LAUNCHD" = true ]; then
+    echo "Uninstalling launchd services for runners 1..$COUNT (label prefix: $LAUNCHD_LABEL_PREFIX)"
+    for i in $(seq 1 "$COUNT"); do
+        remove_launchd_service "$i"
+    done
+    echo "launchd teardown complete."
+    exit 0
+fi
+
+if [ -z "$TOKEN" ]; then
+    echo "ERROR: A registration token is required (use --token or --token-file)."
+    usage
     exit 1
 fi
 
@@ -403,6 +466,12 @@ for i in $(seq 1 "$COUNT"); do
     echo ""
     echo "==> Provisioning $runner_dir"
 
+    # Stop any running launchd job for this index before recreating or
+    # reconfiguring, so its process releases the directory and registration.
+    if [ "$FORCE_RECREATE" = true ] || [ "$REPLACE" = true ]; then
+        stop_launchd_job "$i"
+    fi
+
     if [ -d "$runner_dir" ] && [ "$FORCE_RECREATE" = true ]; then
         echo "Removing existing directory: $runner_dir"
         rm -rf "$runner_dir"
@@ -420,6 +489,19 @@ for i in $(seq 1 "$COUNT"); do
         echo "Runner already configured in $runner_dir (skipping; use --replace to reconfigure)"
         configure_job_completed_hook "$runner_dir"
     else
+        # config.sh refuses to reconfigure a directory that still holds a local
+        # .runner, even with --replace (that flag only replaces the server-side
+        # registration). When --replace is requested, tear down the stale local
+        # config first so a fresh token can reconfigure cleanly.
+        if [ "$REPLACE" = true ] && [ -f "$runner_dir/.runner" ]; then
+            echo "Removing stale local runner config in $runner_dir"
+            (
+                cd "$runner_dir"
+                ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 \
+                    || rm -f .runner .credentials .credentials_rsaparams
+            )
+        fi
+
         config_args=(
             --unattended
             --url "$TARGET_URL"
@@ -427,7 +509,10 @@ for i in $(seq 1 "$COUNT"); do
             --name "$runner_name"
         )
 
-        if [ "$REPLACE" = true ]; then
+        # --replace is also required after --force-recreate: the local dir was
+        # wiped without deregistering, so the same-named runner still exists
+        # server-side and config.sh would otherwise refuse to register it.
+        if [ "$REPLACE" = true ] || [ "$FORCE_RECREATE" = true ]; then
             config_args+=(--replace)
         fi
 
