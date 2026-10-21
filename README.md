@@ -148,8 +148,9 @@ sudo bash bootstrap-gh-runners.sh \
 
 This creates `gha-macos-1` through `gha-macos-3`. Each account has:
 
-- A private home at `/Users/gha-macos-N`, with its runner in `actions-runner`
-  and logs in `.github-runner-logs`. The account's real home is also its `HOME`.
+- A user folder at `/Users/gha-macos-N`, runner files in
+  `/Users/gha-macos-N/actions-runner`, and logs in
+  `/Users/gha-macos-N/.github-runner-logs`. Other runner users cannot access these.
 - No administrator membership, a disabled password, and no interactive shell.
   The accounts are hidden from the login screen.
 - Its own boot-time service, running as that account, **not root**.
@@ -171,11 +172,10 @@ than taking them over. If account creation fails partway through, inspect the
 partial account and home before retrying; bootstrap does not delete them.
 Do not run two account-provisioning bootstraps concurrently.
 
-**Switching existing runners:** first let jobs finish and stop the old services.
-Use the same `--name-prefix` and service label prefix, then run the command above
-with `--replace`. This registers runners in the new accounts; it does not move
-old workspaces, caches, tool installations or credentials. Old directories and
-any user-login services must be retired separately.
+**Switching existing runners:** follow the
+[step-by-step migration guide](MIGRATE-TO-PER-USER-RUNNERS.md). It covers getting
+the token, stopping the old runners, keeping their GitHub names, and checking
+the new setup.
 
 Install shared tools as an administrator and leave them read-only to runner
 accounts. Keep writable caches and credentials per account. These accounts have
