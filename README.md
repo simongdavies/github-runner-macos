@@ -58,6 +58,55 @@ These runners:
 - `github-runner-cleanup.sh`: canonical post-job cleanup hook; copied into each runner directory and wired up via `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` to wipe `_work` after every job.
 - launchd plists are generated automatically by bootstrap when using `--install-launchd`.
 
+### Local Homebrew provisioning smoke test
+
+Manually clone this repository and a candidate
+[`hyperlight-dev/ci-setup-workflow`](https://github.com/hyperlight-dev/ci-setup-workflow)
+checkout onto the Mac. The candidate can contain **uncommitted changes**; the test
+reads its local `action.yml`, not a published branch or release.
+Cloning does not transfer uncommitted repairs from another machine: copy or apply
+the intended changes to the Mac's candidate checkout before testing.
+
+Run from a shell as the **same non-root account and with the same `HOME` and
+initial `PATH` as the failing runner service**. For example, the failing runner
+uses the `runner` account, and launchd may use a private runner `.home` directory
+rather than that account's login home. A login shell that already adds Homebrew to
+`PATH` does not reproduce the service environment.
+
+First inspect the selected prerequisite without executing it:
+
+```bash
+bash smoke-test-homebrew.sh --dry-run /path/to/ci-setup-workflow
+```
+
+After reviewing and approving the candidate and its host changes, run:
+
+```bash
+bash smoke-test-homebrew.sh /path/to/ci-setup-workflow
+```
+
+The script uses Ruby's bundled YAML library (available on macOS) to extract and
+execute the candidate's `Ensure Homebrew is available (macOS)` Bash step. It then
+applies that step's `GITHUB_PATH` entries before running the downstream failing
+command, **`brew install bash`**, and checks that Homebrew Bash >= 4.2 is selected
+on `PATH` and supports `[[ -v ... ]]`. Failure stops the script with a nonzero exit.
+The dry run only parses and prints the step; it does not test permissions.
+
+**This is a provisioning test, not a read-only probe.** The candidate may download
+and run the official Homebrew installer, invoke `sudo`, and repair ownership or
+permissions. `brew install bash` changes shared host state. Review the local
+candidate before running it; do not launch the entire test as root. Changes to
+Homebrew persist after the script finishes; only its temporary files and
+process-local environment are discarded. A second successful run checks
+repeatability on the resulting host state, not a fresh broken installation.
+
+This deliberately does **not** emulate arbitrary composite actions or execute
+their `uses:` steps. Unsupported prerequisite fields and Actions expressions in
+the run block are rejected. It tests the Homebrew prerequisite and Bash
+installation only, not Rust toolchains, builds, or virtualization. No workflow,
+runner registration, PR, merge, release, tag change, or downstream Hyperlight run
+is needed.
+
 ## 1) Get Setup Values from GitHub UI
 
 In your repository or organization:
