@@ -51,6 +51,8 @@ case "$command_name" in
                 if [ "$#" -gt 3 ]; then
                     if [ "$4" = Comment ]; then
                         printf '%s:\n %s\n' "$4" "$(cat "$TEST_DB/$user/$4")"
+                    elif [ "$4" = IsHidden ]; then
+                        printf 'dsAttrTypeNative:%s: %s\n' "$4" "$(cat "$TEST_DB/$user/$4")"
                     else
                         printf '%s: %s\n' "$4" "$(cat "$TEST_DB/$user/$4")"
                     fi
@@ -117,6 +119,16 @@ case "$command_name" in
         ;;
     tar)
         [ "$1" = -xzf ] && [ "$3" = -C ]
+        if [ "$2" = - ]; then
+            archive_content="$(cat)"
+        else
+            if [ "${TEST_ACTOR:-root}" != root ]; then
+                echo "tar: cannot traverse root's private temporary directory" >&2
+                exit 1
+            fi
+            archive_content="$(cat "$2")"
+        fi
+        [ "$archive_content" = 'public runner archive' ]
         cat > "$4/config.sh" <<'CONFIG'
 #!/bin/bash
 set -euo pipefail
@@ -218,7 +230,7 @@ for i in 1 2; do
     assert_contains "$TEST_DB/$user/Password" '*'
     assert_contains "$TEST_DB/$user/UserShell" /usr/bin/false
     assert_contains "$TEST_LOG" "config [$user] home=<$home> user=<$user> inherited=<unset>"
-    assert_contains "$TEST_LOG" "tar [$user]"
+    assert_contains "$TEST_LOG" "tar [$user] <-xzf> <-> <-C> <$home/actions-runner>"
     assert_contains "$TEST_LOG" "chmod [$user] <700> <$home>"
     assert_contains "$TEST_LOG" "chmod [$user] <700> <$home/actions-runner>"
     assert_contains "$plist" "<string>$user</string>"
@@ -278,6 +290,11 @@ new_case changed-account
 provision
 echo /unexpected/home > "$TEST_DB/gha-macos-1/NFSHomeDirectory"
 expect_failure 'Unexpected NFSHomeDirectory' provision
+
+new_case visible-account
+provision
+echo 0 > "$TEST_DB/gha-macos-1/IsHidden"
+expect_failure 'Unexpected IsHidden' provision
 
 new_case duplicate-uid
 provision
