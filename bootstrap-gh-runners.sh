@@ -93,9 +93,12 @@ run_in_runner_dir() {
 }
 
 read_account_attribute() {
-    # dscl can put a value on the next line, indented, even for one value.
+    # dscl may qualify attribute names or put values on indented following lines.
     dscl . -read "$1" "$2" | awk '
-        NR == 1 { sub(/^[^:]+:[[:space:]]*/, "") }
+        NR == 1 {
+            sub(/^dsAttrType(Native|Standard):/, "")
+            sub(/^[^:]+:[[:space:]]*/, "")
+        }
         { sub(/^[[:space:]]+/, ""); if (length) print }
     '
 }
@@ -624,9 +627,6 @@ echo "Downloading: $DOWNLOAD_URL"
 curl -fL "$DOWNLOAD_URL" -o "$TMP_DIR/$ARCHIVE_NAME"
 
 if [ -n "$RUNNER_USER_PREFIX" ]; then
-    # Only the public runner archive lives here; service accounts must read it.
-    chmod 755 "$TMP_DIR"
-    chmod 644 "$TMP_DIR/$ARCHIVE_NAME"
     install_service_scripts
 fi
 
@@ -664,7 +664,8 @@ for i in $(seq 1 "$COUNT"); do
     if [ -f "$runner_dir/config.sh" ]; then
         echo "Runner files already present in $runner_dir"
     else
-        run_as_runner tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$runner_dir"
+        # Open as the caller; runner users cannot traverse root's temporary path.
+        run_as_runner tar -xzf - -C "$runner_dir" < "$TMP_DIR/$ARCHIVE_NAME"
     fi
 
     if [ -f "$runner_dir/.runner" ] && [ "$REPLACE" = false ] && [ "$FORCE_RECREATE" = false ]; then
