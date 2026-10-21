@@ -27,9 +27,11 @@ usage() {
     cat <<'EOF'
 Usage:
   bootstrap-gh-runners.sh --dir-prefix <path-prefix> --count <N> [--repo <owner/repo> | --org <org> | --url <https://github.com/...>] --token <registration-token> [options]
+  sudo bootstrap-gh-runners.sh --runner-user-prefix <prefix> --count <N> [target and token options] --install-launchd --launchd-scope daemon
 
 Required:
   --dir-prefix <path-prefix>   Directory prefix. Script creates <prefix>-1 .. <prefix>-N.
+                               Omit with --runner-user-prefix.
   --count <N>                  Number of runners to create.
   Registration token, one of:
     --token <token>            GitHub runner registration token.
@@ -45,6 +47,12 @@ Optional:
                                                              GitHub adds self-hosted, macOS, and ARM64 automatically.
   --runner-group <name>        Runner group name (org/enterprise scopes only).
   --name-prefix <prefix>       Runner name prefix. Default: "$(hostname -s)-runner".
+  --runner-user-prefix <p>     Opt in to creating non-admin accounts <p>-1 .. <p>-N.
+                               Requires root, --install-launchd and daemon scope.
+                               Uses /Users/<account>/actions-runner and the account's
+                               real home. Cannot combine with --dir-prefix or
+                               --launchd-user. Existing unrelated accounts are refused.
+                               Uninstall removes services, not accounts or their data.
   Existing configured runners are skipped unless --replace or --force-recreate is used.
   --replace                    Pass --replace to config.sh (recommended).
   --force-recreate             Delete existing runner directories before install.
@@ -63,17 +71,117 @@ Optional:
 EOF
 }
 
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+run_as_runner() {
+    if [ -n "$RUNNER_USER_PREFIX" ]; then
+        sudo -H -u "$LAUNCHD_USER" /usr/bin/env -i \
+            HOME="$RUNNER_HOME" USER="$LAUNCHD_USER" LOGNAME="$LAUNCHD_USER" \
+            PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$@"
+    else
+        "$@"
+    fi
+}
+
+run_in_runner_dir() {
+    local runner_dir="$1"
+    shift
+    run_as_runner /bin/bash -c 'cd "$1" && shift && exec "$@"' bash "$runner_dir" "$@"
+}
+
+read_account_attribute() {
+    # dscl can put a value on the next line, indented, even for one value.
+    dscl . -read "$1" "$2" | awk '
+        NR == 1 { sub(/^[^:]+:[[:space:]]*/, "") }
+        { sub(/^[[:space:]]+/, ""); if (length) print }
+    '
+}
+
+ensure_runner_account() {
+    local user="$LAUNCHD_USER"
+    local record="/Users/${user}"
+    local marker="Managed by bootstrap-gh-runners.sh (${user})"
+    local uid groups attribute expected actual
+
+    if dscl . -read "$record" >/dev/null 2>&1; then
+        actual="$(read_account_attribute "$record" Comment)"
+        [ "$actual" = "$marker" ] || die "Refusing to reuse unrelated account: $user"
+    else
+        [ ! -e "$RUNNER_HOME" ] && [ ! -L "$RUNNER_HOME" ] \
+            || die "Refusing to adopt existing home: $RUNNER_HOME"
+        uid="$(dscl . -list /Users UniqueID | awk 'BEGIN { max = 500 } $2 > max { max = $2 } END { print max + 1 }')"
+        echo "Creating non-admin service account: $user (uid $uid)"
+        dscl . -create "$record"
+        dscl . -create "$record" UniqueID "$uid"
+        dscl . -create "$record" PrimaryGroupID 20
+        dscl . -create "$record" NFSHomeDirectory "$RUNNER_HOME"
+        dscl . -create "$record" UserShell /usr/bin/false
+        dscl . -create "$record" RealName "GitHub Actions runner $user"
+        dscl . -create "$record" IsHidden 1
+        dscl . -create "$record" Password '*'
+        mkdir -m 700 "$RUNNER_HOME"
+        chown "$user:staff" "$RUNNER_HOME"
+        # Mark only fully provisioned accounts; partial failures need operator review.
+        dscl . -create "$record" Comment "$marker"
+    fi
+
+    uid="$(id -u "$user")"
+    [[ "$uid" =~ ^[0-9]+$ ]] && [ "$uid" -ge 501 ] || die "Unsafe uid for account: $user"
+    [ "$(dscl . -list /Users UniqueID | awk -v uid="$uid" '$2 == uid { n++ } END { print n+0 }')" -eq 1 ] \
+        || die "Account uid is not unique: $user"
+    for attribute in NFSHomeDirectory PrimaryGroupID UserShell IsHidden Password; do
+        case "$attribute" in
+            NFSHomeDirectory) expected="$RUNNER_HOME" ;;
+            PrimaryGroupID) expected=20 ;;
+            UserShell) expected=/usr/bin/false ;;
+            IsHidden) expected=1 ;;
+            Password) expected='*' ;;
+        esac
+        actual="$(read_account_attribute "$record" "$attribute")"
+        [ "$actual" = "$expected" ] || die "Unexpected $attribute for managed account: $user"
+    done
+    groups="$(id -Gn "$user")"
+    case " $groups " in
+        *" admin "*|*" wheel "*) die "Runner account must not be privileged: $user" ;;
+    esac
+    [ -d "$RUNNER_HOME" ] && [ ! -L "$RUNNER_HOME" ] || die "Unsafe or missing home: $RUNNER_HOME"
+    [ "$(stat -f %u "$RUNNER_HOME")" = "$uid" ] || die "Home is not owned by $user: $RUNNER_HOME"
+    run_as_runner chmod 700 "$RUNNER_HOME"
+}
+
+install_service_scripts() {
+    SERVICE_SCRIPT_DIR="/Library/Application Support/github-runner-macos"
+    [ ! -L "$SERVICE_SCRIPT_DIR" ] || die "Service script directory must not be a symlink."
+    if [ -e "$SERVICE_SCRIPT_DIR" ]; then
+        [ -d "$SERVICE_SCRIPT_DIR" ] && [ "$(stat -f %u "$SERVICE_SCRIPT_DIR")" = 0 ] \
+            || die "Service script directory must be a root-owned directory."
+    fi
+    mkdir -p "$SERVICE_SCRIPT_DIR"
+    chown root:wheel "$SERVICE_SCRIPT_DIR"
+    chmod 755 "$SERVICE_SCRIPT_DIR"
+    local script
+    for script in github-runner-wrapper.sh github-runner-cleanup.sh; do
+        [ ! -L "$SERVICE_SCRIPT_DIR/$script" ] || die "Service script must not be a symlink: $script"
+        cp "$SCRIPT_DIR/$script" "$SERVICE_SCRIPT_DIR/$script"
+        chown root:wheel "$SERVICE_SCRIPT_DIR/$script"
+        chmod 755 "$SERVICE_SCRIPT_DIR/$script"
+    done
+}
+
 set_or_replace_env_var() {
     local env_file="$1"
     local key="$2"
     local value="$3"
 
-    if grep -q "^${key}=" "$env_file" 2>/dev/null; then
+    if run_as_runner grep -q "^${key}=" "$env_file" 2>/dev/null; then
         # NOTE: BSD/macOS sed requires the empty '' argument after -i. This
         # script targets macOS only; GNU sed would drop the ''.
-        sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_file"
+        run_as_runner sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_file"
     else
-        echo "${key}=${value}" >> "$env_file"
+        run_as_runner /bin/bash -c 'printf "%s=%s\n" "$2" "$3" >> "$1"' bash "$env_file" "$key" "$value"
     fi
 }
 
@@ -85,9 +193,9 @@ configure_job_completed_hook() {
     local env_file="$runner_dir/.env"
     local hook_wrapper="$runner_dir/job-completed-hook.sh"
 
-    cp "$SCRIPT_DIR/github-runner-cleanup.sh" "$hook_wrapper"
-    chmod +x "$hook_wrapper"
-    touch "$env_file"
+    run_as_runner cp "$SERVICE_SCRIPT_DIR/github-runner-cleanup.sh" "$hook_wrapper"
+    run_as_runner chmod +x "$hook_wrapper"
+    run_as_runner touch "$env_file"
     set_or_replace_env_var "$env_file" "ACTIONS_RUNNER_HOOK_JOB_COMPLETED" "$hook_wrapper"
 }
 
@@ -99,6 +207,20 @@ install_launchd_service() {
     local log_base="${RUNNER_HOME}/.github-runner-logs/runner-${runner_index}"
     local isolated_home="${runner_dir}/.home"
     local user_block=""
+    local identity_env_block=""
+    local runner_path="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+    if [ -n "$RUNNER_USER_PREFIX" ]; then
+        isolated_home="$RUNNER_HOME"
+        runner_path="/opt/homebrew/bin:${runner_path}"
+        identity_env_block=$(cat <<EOF
+        <key>USER</key>
+        <string>${LAUNCHD_USER}</string>
+        <key>LOGNAME</key>
+        <string>${LAUNCHD_USER}</string>
+EOF
+)
+    fi
 
     if [ "$LAUNCHD_SCOPE" = "daemon" ]; then
         user_block=$(cat <<EOF
@@ -108,11 +230,14 @@ EOF
 )
     fi
 
-    mkdir -p "$LAUNCHD_DIR" "${RUNNER_HOME}/.github-runner-logs" "$isolated_home"
-    if [ "$LAUNCHD_SCOPE" = "daemon" ]; then
+    mkdir -p "$LAUNCHD_DIR"
+    run_as_runner mkdir -p "${RUNNER_HOME}/.github-runner-logs" "$isolated_home"
+    if [ -n "$RUNNER_USER_PREFIX" ]; then
+        run_as_runner chmod 700 "${RUNNER_HOME}/.github-runner-logs"
+    elif [ "$LAUNCHD_SCOPE" = "daemon" ]; then
         chown "$LAUNCHD_USER" "$isolated_home"
     fi
-    chmod +x "$SCRIPT_DIR/github-runner-wrapper.sh"
+    chmod +x "$SERVICE_SCRIPT_DIR/github-runner-wrapper.sh"
 
     cat > "$plist_dest" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -129,7 +254,7 @@ ${user_block}
         <string>/usr/bin/caffeinate</string>
         <string>-is</string>
         <string>/bin/bash</string>
-        <string>${SCRIPT_DIR}/github-runner-wrapper.sh</string>
+        <string>${SERVICE_SCRIPT_DIR}/github-runner-wrapper.sh</string>
         <string>${runner_dir}</string>
     </array>
 
@@ -153,8 +278,9 @@ ${user_block}
 
     <key>EnvironmentVariables</key>
     <dict>
+${identity_env_block}
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>${runner_path}</string>
         <key>HOME</key>
         <string>${isolated_home}</string>
         <key>RUNNER_LOG_DIR</key>
@@ -170,6 +296,9 @@ ${user_block}
 </plist>
 EOF
 
+    if [ "$LAUNCHD_SCOPE" = "daemon" ]; then
+        chown root:wheel "$plist_dest"
+    fi
     chmod 644 "$plist_dest"
 
     if [ "$LAUNCHD_SCOPE" = "daemon" ]; then
@@ -251,6 +380,9 @@ LAUNCHD_SCOPE="agent"
 LAUNCHD_USER="${SUDO_USER:-$USER}"
 LAUNCHD_DIR=""
 RUNNER_HOME=""
+RUNNER_USER_PREFIX=""
+LAUNCHD_USER_EXPLICIT=false
+SERVICE_SCRIPT_DIR="$SCRIPT_DIR"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -294,6 +426,11 @@ while [ "$#" -gt 0 ]; do
             NAME_PREFIX="${2:-}"
             shift 2
             ;;
+        --runner-user-prefix)
+            RUNNER_USER_PREFIX="${2:-}"
+            [ -n "$RUNNER_USER_PREFIX" ] || die "--runner-user-prefix requires a value."
+            shift 2
+            ;;
         --replace)
             REPLACE=true
             shift
@@ -320,6 +457,7 @@ while [ "$#" -gt 0 ]; do
             ;;
         --launchd-user)
             LAUNCHD_USER="${2:-}"
+            LAUNCHD_USER_EXPLICIT=true
             shift 2
             ;;
         --launchd-dir)
@@ -353,10 +491,31 @@ if [ -n "$TOKEN_FILE" ]; then
     TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
 fi
 
-if [ -z "$DIR_PREFIX" ] || [ -z "$COUNT" ]; then
+if { [ -z "$DIR_PREFIX" ] && [ -z "$RUNNER_USER_PREFIX" ]; } || [ -z "$COUNT" ]; then
     echo "ERROR: --dir-prefix and --count are required."
     usage
     exit 1
+fi
+
+if [ -n "$RUNNER_USER_PREFIX" ]; then
+    [[ "$RUNNER_USER_PREFIX" =~ ^[a-z][a-z0-9_-]*$ ]] \
+        || die "--runner-user-prefix must start with a lowercase letter and contain only lowercase letters, digits, '_' or '-'."
+    [ "${#RUNNER_USER_PREFIX}" -le $((30 - ${#COUNT})) ] \
+        || die "Runner account names must be at most 31 characters."
+    [ -z "$DIR_PREFIX" ] || die "--runner-user-prefix cannot be combined with --dir-prefix."
+    [ "$LAUNCHD_USER_EXPLICIT" = false ] || die "--runner-user-prefix cannot be combined with --launchd-user."
+    [ "$LAUNCHD_SCOPE" = daemon ] || die "--runner-user-prefix requires --launchd-scope daemon."
+    [ "$(uname -s)" = Darwin ] || die "--runner-user-prefix is supported only on macOS."
+    [ "$(id -u)" -eq 0 ] || die "--runner-user-prefix requires root. Re-run with sudo."
+    [ -n "$LAUNCHD_DIR" ] || LAUNCHD_DIR="/Library/LaunchDaemons"
+    # Keep daemon definitions outside runner-controlled directories.
+    [ "$LAUNCHD_DIR" = /Library/LaunchDaemons ] \
+        || die "--runner-user-prefix requires the standard /Library/LaunchDaemons directory."
+    [[ "$LAUNCHD_LABEL_PREFIX" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] \
+        || die "Invalid --launchd-label-prefix."
+    if [ "$UNINSTALL_LAUNCHD" = false ]; then
+        [ "$INSTALL_LAUNCHD" = true ] || die "--runner-user-prefix requires --install-launchd."
+    fi
 fi
 
 if ! [[ "$COUNT" =~ ^[0-9]+$ ]] || [ "$COUNT" -lt 1 ]; then
@@ -417,7 +576,7 @@ resolve_launchd_layout() {
     esac
 }
 
-if [ "$INSTALL_LAUNCHD" = true ]; then
+if [ "$INSTALL_LAUNCHD" = true ] && [ -z "$RUNNER_USER_PREFIX" ]; then
     resolve_launchd_layout
 fi
 
@@ -464,8 +623,22 @@ fi
 echo "Downloading: $DOWNLOAD_URL"
 curl -fL "$DOWNLOAD_URL" -o "$TMP_DIR/$ARCHIVE_NAME"
 
+if [ -n "$RUNNER_USER_PREFIX" ]; then
+    # Only the public runner archive lives here; service accounts must read it.
+    chmod 755 "$TMP_DIR"
+    chmod 644 "$TMP_DIR/$ARCHIVE_NAME"
+    install_service_scripts
+fi
+
 for i in $(seq 1 "$COUNT"); do
-    runner_dir="${DIR_PREFIX}-${i}"
+    if [ -n "$RUNNER_USER_PREFIX" ]; then
+        LAUNCHD_USER="${RUNNER_USER_PREFIX}-${i}"
+        RUNNER_HOME="/Users/${LAUNCHD_USER}"
+        ensure_runner_account
+        runner_dir="${RUNNER_HOME}/actions-runner"
+    else
+        runner_dir="${DIR_PREFIX}-${i}"
+    fi
     runner_name="${NAME_PREFIX}-${i}"
     configured_now=false
 
@@ -480,15 +653,18 @@ for i in $(seq 1 "$COUNT"); do
 
     if [ -d "$runner_dir" ] && [ "$FORCE_RECREATE" = true ]; then
         echo "Removing existing directory: $runner_dir"
-        rm -rf "$runner_dir"
+        run_as_runner rm -rf "$runner_dir"
     fi
 
-    mkdir -p "$runner_dir"
+    run_as_runner mkdir -p "$runner_dir"
+    if [ -n "$RUNNER_USER_PREFIX" ]; then
+        run_as_runner chmod 700 "$runner_dir"
+    fi
 
     if [ -f "$runner_dir/config.sh" ]; then
         echo "Runner files already present in $runner_dir"
     else
-        tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$runner_dir"
+        run_as_runner tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$runner_dir"
     fi
 
     if [ -f "$runner_dir/.runner" ] && [ "$REPLACE" = false ] && [ "$FORCE_RECREATE" = false ]; then
@@ -501,11 +677,8 @@ for i in $(seq 1 "$COUNT"); do
         # config first so a fresh token can reconfigure cleanly.
         if [ "$REPLACE" = true ] && [ -f "$runner_dir/.runner" ]; then
             echo "Removing stale local runner config in $runner_dir"
-            (
-                cd "$runner_dir"
-                ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 \
-                    || rm -f .runner .credentials .credentials_rsaparams
-            )
+            run_in_runner_dir "$runner_dir" ./config.sh remove --token "$TOKEN" >/dev/null 2>&1 \
+                || run_as_runner rm -f "$runner_dir/.runner" "$runner_dir/.credentials" "$runner_dir/.credentials_rsaparams"
         fi
 
         config_args=(
@@ -530,10 +703,7 @@ for i in $(seq 1 "$COUNT"); do
             config_args+=(--runnergroup "$RUNNER_GROUP")
         fi
 
-        (
-            cd "$runner_dir"
-            ./config.sh "${config_args[@]}"
-        )
+        run_in_runner_dir "$runner_dir" ./config.sh "${config_args[@]}"
 
         configure_job_completed_hook "$runner_dir"
         configured_now=true

@@ -48,7 +48,7 @@ These runners:
 - create numbered runner directories from a prefix
 - configure each runner against a repo or org
 - run them under launchd with restart behavior
-- give each runner a private `<runner-dir>/.home` directory, isolating user-level tool state such as Rustup, Cargo, and npm caches from concurrent runners
+- give each runner a private `<runner-dir>/.home` directory by default, or optionally create a separate macOS user per runner
 - clean each runner work directory after every job (this clears `_work` only — it does **not** isolate jobs from the rest of the host)
 
 ## Scripts
@@ -113,6 +113,7 @@ Common flags:
 - --labels <csv>: Custom labels (default: `hvf`). Passing this flag replaces the default. GitHub automatically adds `self-hosted`, `macOS`, and `ARM64`; do not repeat them here.
 - --runner-group <name>: Org or enterprise runner group.
 - --name-prefix <prefix>: Base name for runners.
+- --runner-user-prefix <prefix>: Create a separate non-admin macOS account for each runner. See [Separate users per runner](#separate-users-per-runner).
 - --token-file <path>: Read the registration token from a file instead of `--token` (keeps the secret out of shell history and the process list).
 - --replace: Reconfigure existing runners in place. The script stops any running launchd job first, deregisters the stale local config, then re-registers (passing `--replace` to `config.sh` so a same-named server-side runner is replaced).
 - --force-recreate: Stops the launchd job, deletes existing directories, and reinstalls from scratch. Implies `--replace` at registration time so the same-named server-side runner is replaced rather than rejected.
@@ -128,6 +129,80 @@ Common flags:
 Incremental behavior:
 - If prefix-1 and prefix-2 already exist and are configured, and you run with --count 3, the script skips existing configured directories and ensures services 1..3 are installed/reloaded.
 - It also ensures ACTIONS_RUNNER_HOOK_JOB_COMPLETED is present in each runner .env and writes job-completed-hook.sh.
+
+### Separate users per runner
+
+Opt in with `--runner-user-prefix`. Bootstrap creates the accounts and starts
+each runner automatically after reboot under its own user. No login is needed.
+Run this from an administrator account:
+
+```bash
+sudo bash bootstrap-gh-runners.sh \
+  --runner-user-prefix gha-macos \
+  --count 3 \
+  --org your-org \
+  --token-file "$HOME/runner-registration-token" \
+  --install-launchd \
+  --launchd-scope daemon
+```
+
+This creates `gha-macos-1` through `gha-macos-3`. Each account has:
+
+- A private home at `/Users/gha-macos-N`, with its runner in `actions-runner`
+  and logs in `.github-runner-logs`. The account's real home is also its `HOME`.
+- No administrator membership, a disabled password, and no interactive shell.
+  The accounts are hidden from the login screen.
+- Its own boot-time service, running as that account, **not root**.
+
+Registration, extraction and runner-file updates run as the account too.
+Shared service scripts are installed under the root-owned
+`/Library/Application Support/github-runner-macos` directory, so the accounts
+do not need access to the bootstrap checkout.
+
+Do not combine this option with `--dir-prefix` or `--launchd-user`. Use the
+standard service directory; custom `--launchd-dir` values are not supported in
+this mode. Account names must start with a lowercase letter, contain only
+lowercase letters, digits, `_` or `-`, and fit within 31 characters including
+the `-N` suffix.
+
+Rerunning bootstrap reuses accounts it created and checks their ownership and
+account settings. It refuses unrelated accounts or pre-existing homes rather
+than taking them over. If account creation fails partway through, inspect the
+partial account and home before retrying; bootstrap does not delete them.
+Do not run two account-provisioning bootstraps concurrently.
+
+**Switching existing runners:** first let jobs finish and stop the old services.
+Use the same `--name-prefix` and service label prefix, then run the command above
+with `--replace`. This registers runners in the new accounts; it does not move
+old workspaces, caches, tool installations or credentials. Old directories and
+any user-login services must be retired separately.
+
+Install shared tools as an administrator and leave them read-only to runner
+accounts. Keep writable caches and credentials per account. These accounts have
+no automatic sudo access; existing host sudo policies must not grant it.
+Workloads requiring a desktop session, an unlocked login keychain, or privacy
+permissions may need additional setup. Qualify your AVF workloads under the
+new accounts before switching the fleet.
+
+Separate users reduce cross-runner access and interference; they are **not a
+sandbox**. System-wide resources remain shared, and state outside `_work`
+persists between jobs on the same runner.
+
+To remove the services:
+
+```bash
+sudo bash bootstrap-gh-runners.sh \
+  --runner-user-prefix gha-macos \
+  --count 3 \
+  --launchd-scope daemon \
+  --uninstall-launchd
+```
+
+Accounts, their files, and the shared service scripts are intentionally retained.
+Remove runner registrations from GitHub separately.
+
+Bootstrap regression tests use mocked macOS commands and do not create real
+accounts or services: `bash tests/bootstrap-gh-runners.test.sh`.
 
 ## 3) Verify
 
