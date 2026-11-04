@@ -205,7 +205,9 @@ run_one_job() {
     local ip="" runner_output=""
     cleanup_job() {
         if [ "$run_failed" -eq 1 ]; then
-            capture_host_vm_diagnostics "$RUNNER_LABEL" "$CLONE_NAME"
+            if ! capture_host_vm_diagnostics "$RUNNER_LABEL" "$CLONE_NAME"; then
+                err "[runner ${INDEX}] Host VM diagnostic collection failed"
+            fi
             err "[runner ${INDEX}] Failure reason: ${fail_reason}"
             if [ -f "$vm_runtime_log" ]; then
                 err "[runner ${INDEX}] Tart runtime log size: $(wc -c < "$vm_runtime_log" | tr -d ' ') bytes"
