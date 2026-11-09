@@ -350,8 +350,9 @@ install_err_diagnostics() {
 capture_host_vm_diagnostics() {
     local runner_label="$1"
     local vm_name="$2"
+    local report_dir latest_vm_report
 
-    mkdir -p "$TART_DEBUG_LOG_DIR"
+    mkdir -p "$TART_DEBUG_LOG_DIR" || return 1
     local diag_file="${TART_DEBUG_LOG_DIR}/${runner_label}-vm-diagnostics.log"
 
     {
@@ -365,28 +366,30 @@ capture_host_vm_diagnostics() {
         tart list 2>/dev/null || true
         echo ""
         echo "-- recent system log (Virtualization + tart) --"
-        log show --style compact --last "${TART_VM_LOG_LOOKBACK_MINUTES}m" \
-            --predicate '(process == "tart") || (subsystem BEGINSWITH "com.apple.Virtualization") || (senderImagePath CONTAINS[c] "Virtualization")' \
+        command log show --style compact --last "${TART_VM_LOG_LOOKBACK_MINUTES}m" \
+            --predicate '(process == "tart") || (process == "ReportCrash") || (subsystem BEGINSWITH "com.apple.Virtualization") || (senderImagePath CONTAINS[c] "Virtualization")' \
             2>&1 | tail -n 300 || true
-        echo ""
+
+        for report_dir in "/Library/Logs/DiagnosticReports" "$HOME/Library/Logs/DiagnosticReports"; do
+            [ -d "$report_dir" ] || continue
+            echo ""
+            echo "-- recent DiagnosticReports: ${report_dir} --"
+            find "$report_dir" -maxdepth 1 -type f \
+                \( -name 'tart*.crash' -o -name 'tart*.ips' -o -name '*Virtualization*.crash' -o -name '*Virtualization*.ips' -o -name 'kernel*.panic' -o -name 'kernel*.ips' \) \
+                -print | tail -n 6 || true
+
+            echo ""
+            echo "-- latest available Virtualization crash report (candidate) --"
+            latest_vm_report="$(find "$report_dir" -maxdepth 1 -type f -name 'com.apple.Virtualization.VirtualMachine-*.ips' | sort | tail -n 1)" || latest_vm_report=""
+            if [ -n "$latest_vm_report" ] && [ -f "$latest_vm_report" ]; then
+                echo "$latest_vm_report"
+                cat "$latest_vm_report" || true
+            else
+                echo "none"
+            fi
+        done
         echo "-- end diagnostics --"
-
-        echo ""
-        echo "-- recent DiagnosticReports (tart/virtualization) --"
-        find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \
-            \( -name 'tart*.crash' -o -name 'tart*.ips' -o -name '*Virtualization*.crash' -o -name '*Virtualization*.ips' -o -name 'kernel*.panic' -o -name 'kernel*.ips' \) \
-            -print 2>/dev/null | tail -n 6 || true
-
-        echo ""
-        echo "-- latest Virtualization crash excerpt --"
-        latest_vm_report="$(find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f -name 'com.apple.Virtualization.VirtualMachine-*.ips' | sort | tail -n 1)"
-        if [ -n "$latest_vm_report" ] && [ -f "$latest_vm_report" ]; then
-            echo "$latest_vm_report"
-            tail -n 120 "$latest_vm_report" || true
-        else
-            echo "none"
-        fi
-    } >> "$diag_file"
+    } >> "$diag_file" 2>&1 || return 1
 
     err "[${runner_label}] Host VM diagnostics appended to ${diag_file}"
 }

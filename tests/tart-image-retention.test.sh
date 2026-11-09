@@ -266,10 +266,41 @@ printf 'Job finished; tearing down clone\nUpdate finished successfully.\n' > "$T
 ! runner_job_succeeded "$TEST_ROOT/job-output"
 echo 'PASS: only a real Succeeded job result counts, including CRLF runner output'
 
+(
+    set -E
+    export HOME="$TEST_ROOT/missing-home"
+    cat > "$TEST_ROOT/bin/log" <<'LOG'
+#!/bin/bash
+echo "system log fixture: $*"
+LOG
+    chmod +x "$TEST_ROOT/bin/log"
+    sed "s|\"/Library/Logs/DiagnosticReports\"|\"$TEST_ROOT/system-reports\"|" \
+        "$SCRIPT_DIR/tart-common.sh" > "$TEST_ROOT/diagnostics-common.sh"
+    source "$TEST_ROOT/diagnostics-common.sh"
+    install_err_diagnostics fixture
+    capture_host_vm_diagnostics tart-runner-1 fixture-vm
+    diag_log="$TART_DEBUG_LOG_DIR/tart-runner-1-vm-diagnostics.log"
+    assert_contains "$diag_log" 'system log fixture: show'
+    assert_contains "$diag_log" 'ReportCrash'
+    echo 'PASS: missing report directories allow system log collection'
+
+    mkdir "$TEST_ROOT/system-reports"
+    report="$TEST_ROOT/system-reports/com.apple.Virtualization.VirtualMachine-fixture.ips"
+    printf '%s\n' report-start {1..130} report-end > "$report"
+    capture_host_vm_diagnostics tart-runner-1 fixture-vm
+    assert_contains "$diag_log" "$report"
+    assert_contains "$diag_log" report-start
+    assert_contains "$diag_log" report-end
+    echo 'PASS: system crash reports are collected in full with a missing user directory'
+)
+
 mkdir "$TEST_ROOT/source"
 cp "$SCRIPT_DIR/tart-common.sh" "$SCRIPT_DIR/tart-guest-memory.sh" "$TEST_ROOT/source/"
 cat >> "$TEST_ROOT/source/tart-common.sh" <<'DIAGNOSTICS'
-capture_host_vm_diagnostics() { echo 'fixture VM diagnostics' >&2; }
+capture_host_vm_diagnostics() {
+    echo 'fixture VM diagnostics' >&2
+    [ "${TEST_DIAGNOSTICS_FAIL:-0}" = 0 ]
+}
 DIAGNOSTICS
 sed -e 's/^while true; do$/for _test_iteration in 1; do/' \
     -e 's/^        sleep 10$/        :/' "$SCRIPT_DIR/tart-runner-loop.sh" \
@@ -372,3 +403,14 @@ exists "$base-runner-1"
 assert_contains "$TEST_ROOT/loop-output" 'Keeping failed VM clone for inspection'
 [ -z "$(find "$TART_DEBUG_LOG_DIR" -name '*-job-output.*' -print)" ]
 echo 'PASS: failed SSH never certifies a job and retained diagnostic clones keep their source leases'
+
+reset_case
+export TEST_DIAGNOSTICS_FAIL=1 TEST_SSH_EXIT=1 TART_KEEP_FAILED_VM=0
+bash "$TEST_ROOT/source/tart-runner-loop.sh" --app-id 123 --private-key "$TEST_ROOT/app.pem" \
+    --repo owner/repo > "$TEST_ROOT/loop-output" 2>&1 || { cat "$TEST_ROOT/loop-output"; exit 1; }
+assert_contains "$TEST_ROOT/loop-output" 'Host VM diagnostic collection failed'
+assert_contains "$TEST_ROOT/loop-output" 'Failure reason: remote runner command exited non-zero'
+[ ! -f "$state/$base.in-use/$base-runner-1" ]
+! exists "$base-runner-1"
+[ -s "$TART_CONFIG_DIR/runner-1.failure-epochs" ]
+echo 'PASS: diagnostic failure does not interrupt clone cleanup or failure tracking'
