@@ -240,22 +240,25 @@ for i in 1 2; do
     assert_contains "$plist" '<key>USER</key>'
     assert_contains "$plist" '<key>LOGNAME</key>'
     assert_contains "$home/actions-runner/.env" "ACTIONS_RUNNER_HOOK_JOB_COMPLETED=$home/actions-runner/job-completed-hook.sh"
+    assert_contains "$home/actions-runner/.configured-labels" hvf
     assert_absent "$plist" .home
 done
 assert_contains "$TEST_LOG" 'chown [root] <root:wheel>'
 
 : > "$TEST_LOG"
-provision || { cat "$TEST_CASE/output"; exit 1; }
+provision --labels different || { cat "$TEST_CASE/output"; exit 1; }
 assert_absent "$TEST_LOG" '<-create>'
 assert_absent "$TEST_LOG" 'config ['
+assert_contains "$TEST_USERS/gha-macos-1/actions-runner/.configured-labels" hvf
 assert_contains "$TEST_CASE/output" 'skipping; use --replace'
 [ "$(grep -c '^ACTIONS_RUNNER_HOOK_JOB_COMPLETED=' "$TEST_USERS/gha-macos-1/actions-runner/.env")" -eq 1 ]
 
 : > "$TEST_LOG"
-provision --replace || { cat "$TEST_CASE/output"; exit 1; }
+provision --replace --labels hvf,custom-pool || { cat "$TEST_CASE/output"; exit 1; }
 assert_contains "$TEST_LOG" 'config [gha-macos-1]'
 assert_contains "$TEST_LOG" 'command=<remove>'
 assert_contains "$TEST_LOG" 'launchctl [root] <bootout> <system/com.github.runner-1>'
+assert_contains "$TEST_USERS/gha-macos-1/actions-runner/.configured-labels" hvf,custom-pool
 
 : > "$TEST_LOG"
 provision --force-recreate || { cat "$TEST_CASE/output"; exit 1; }

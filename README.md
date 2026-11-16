@@ -182,6 +182,75 @@ Jobs requiring a desktop session, an unlocked login keychain or macOS privacy
 permissions may need additional setup. Run your AVF workflows under the new
 accounts and check they succeed before replacing the old runners.
 
+#### Repair LLVM and restart existing per-user runners
+
+The wrapper links an existing `$HOME/.homebrew/opt/llvm` installation with
+`HOMEBREW_NO_AUTO_UPDATE=1 brew link --force llvm` and verifies `clang --version`
+before starting the runner. This runs as the runner account on every wrapper
+startup, including after reboot. It does not install or upgrade LLVM, modify
+shared Homebrew, or change runners without a private Homebrew/LLVM installation.
+`--force` permits linking keg-only LLVM; it does not bypass locks. A linking or
+compiler verification failure prevents the runner from accepting jobs.
+
+Prevent new jobs from targeting the macOS pool and let current jobs finish.
+Removing `hvf` only blocks workflows requiring that label; pause workflows using
+other labels too. From the updated checkout on the Mac, as an administrator, run:
+
+```bash
+just repair-macos-runners
+```
+
+The command handles administrator elevation and checks the administrator's
+existing GitHub CLI authentication itself. There are no separate authentication
+check or sudo-cache steps. It requires `gh`, `jq` and GitHub permission to manage
+the registered repository/organization's self-hosted runners. If authentication
+is missing, it stops before changing services and explains how to sign in.
+GitHub credentials are never given to runner accounts.
+
+The same command handles every discovered enabled macOS runner, regardless of
+when it was registered. It discovers services from `/Library/LaunchDaemons/*.plist`
+by their shared wrapper path, not account names, label prefixes or indices. It
+prints their account, home, state, logs and lock-inspection command; checks their
+GitHub identity, automatic labels and non-busy state; installs the persistent
+wrapper; then restarts loaded services and starts enabled unloaded services.
+Disabled services, Tart, manually started runners and login-session LaunchAgents
+are not restarted.
+
+After restart it waits for each runner to be online and idle (up to 30 checks,
+two seconds apart), verifies that linked Clang matches private LLVM and runs
+successfully, then restores the required custom labels, including `hvf`. It
+preserves other GitHub labels and verifies each update. No labels are restored
+if any restart or pool health check fails. API failures during restoration return
+nonzero and may leave earlier runners restored; retrying is additive.
+
+The pool's required custom-label default is `hvf`. Per-runner requirements saved
+in `<runner-directory>/.configured-labels` take precedence, so custom initial
+labels are retained. Registration and successful repair maintain that file
+automatically. To supply a different default custom-label set for a pool:
+
+```bash
+just repair-macos-runners 'hvf,custom-pool'
+```
+
+Removed historical custom labels cannot be inferred from GitHub. For runners
+with different requirements, record each verified CSV in its own
+`.configured-labels` file as that account before repair. This is the same
+configuration and repair workflow for every runner.
+
+Keep scheduling paused until repair succeeds, then run a normal workflow.
+Restoring `hvf` makes runners eligible for matching jobs again. The command
+rechecks busy state before each restart, but it cannot prevent a job arriving
+between that check and restart unless scheduling is paused.
+
+For inspection only, use `just list-macos-runners`. To deploy the persistent
+wrapper without restarting services or changing labels, use
+`just install-macos-wrapper`. These commands also handle elevation themselves.
+
+If the lock error returns, run the affected runner's lock-inspection command
+printed by the inventory first. Do not delete locks or kill their owners blindly.
+Resolve the owning Homebrew operation before retrying. This startup check repairs
+linking; it does not prevent a workflow from modifying private Homebrew afterwards.
+
 Separate users reduce cross-runner access and interference; they are **not a
 sandbox**. System-wide resources remain shared, and state outside `_work`
 persists between jobs on the same runner.

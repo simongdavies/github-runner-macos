@@ -130,6 +130,27 @@ if [ ! -f "$RUNNER_DIR/run.sh" ]; then
     exit 1
 fi
 
+prepare_private_llvm() {
+    local brew="${HOME}/.homebrew/bin/brew"
+    local llvm="${HOME}/.homebrew/opt/llvm"
+
+    if [ ! -x "$brew" ] || [ ! -d "$llvm" ]; then
+        return 0
+    fi
+
+    log "INFO" "Linking per-user LLVM before accepting jobs"
+    if ! HOMEBREW_NO_AUTO_UPDATE=1 "$brew" link --force llvm; then
+        log "ERROR" "LLVM linking failed; runner will not start. --force does not bypass locks. Inspect lock owners as this runner user: lsof +D \"${HOME}/.homebrew/var/homebrew/locks\""
+        return 1
+    fi
+    if ! "$llvm/bin/clang" --version; then
+        log "ERROR" "Per-user LLVM compiler verification failed; runner will not start"
+        return 1
+    fi
+}
+
+prepare_private_llvm
+
 # Main loop
 restart_count=0
 while true; do

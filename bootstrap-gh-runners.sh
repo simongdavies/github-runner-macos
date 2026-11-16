@@ -705,6 +705,8 @@ for i in $(seq 1 "$COUNT"); do
         fi
 
         run_in_runner_dir "$runner_dir" ./config.sh "${config_args[@]}"
+        run_as_runner /bin/bash -c 'umask 077; printf "%s\n" "$2" > "$1"' \
+            bash "$runner_dir/.configured-labels" "$LABELS"
 
         configure_job_completed_hook "$runner_dir"
         configured_now=true
